@@ -1,0 +1,44 @@
+{
+  "id": "rainy_night",
+  "title": "雨夜",
+  "author": "你的名字",
+  "description": "演示转场、立绘移动、音效与全屏文本。",
+  "bg": "bg_tk_ikebukuro",
+  "bgm": "bgs_story_rain",
+  "characters": {
+    "sat": { "display_name": "Saturday", "color": "c_aqua", "portrait": "sat_neutral", "x": 520, "y": 140 },
+    "kot": { "display_name": "Allison", "color": "c_orange", "portrait": "kot_ad_neutral", "x": 520, "y": 150 }
+  },
+  "lines": [
+    { "kind": "location", "value": "池袋" },
+    { "kind": "time", "value": "9:12 PM" },
+    { "kind": "date", "value": "November 18th, 2022" },
+
+    { "kind": "narration", "text": "雨还在下，屋檐下的水声把整条街隔在了外面。" },
+    { "kind": "portrait", "who": "sat" },
+    { "kind": "move", "who": "sat", "x": 220, "time": 40 },
+    { "who": "sat", "text": "你带伞了吗？" },
+
+    { "kind": "se", "value": "shatterfx" },
+    { "kind": "flash", "alpha": 0.5, "time": 24 },
+    { "kind": "narration", "text": "远处传来一声闷响，像是谁把什么东西摔在了地上。" },
+
+    { "kind": "portrait", "who": "kot", "x": 100 },
+    { "who": "kot", "text": "……听见了。" },
+    { "kind": "portrait_fade", "who": "kot", "from": 1, "to": 0.3, "time": 30 },
+    { "who": "kot", "text": "`c{think}（装作没听见好了。）" },
+
+    { "kind": "fade", "color": 0, "to": 1, "time": 20, "wait": true },
+    { "kind": "portrait_clear" },
+    { "kind": "bg", "value": "bg_wm_nightstreet" },
+    { "kind": "fade", "to": 0, "time": 20, "wait": true },
+
+    { "kind": "fullscreen" },
+    { "kind": "narration", "text": "那天晚上之后的很多事，都是从那一声闷响开始的。" },
+    { "kind": "narration", "text": "（全屏文本框适合放这种整段独白。）" },
+    { "kind": "fullscreen_end" },
+
+    { "kind": "bgm_stop", "fade": 800 },
+    { "kind": "end" }
+  ]
+}

@@ -1,0 +1,8 @@
+[
+  {
+    "Entry": "gml_Object_o_story_pause_Step_0",
+    "Find": "next_room = scene_eventline;",
+    "Value": "next_room = scene_eventline; if (variable_global_exists(\"mod_cs_active\") && global.mod_cs_active) next_room = scene_mainmenu;",
+    "Type": 1
+  }
+]

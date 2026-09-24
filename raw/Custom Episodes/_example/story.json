@@ -1,0 +1,137 @@
+{
+  "id": "example_station",
+  "title": "示例：警局的一分钟",
+  "author": "Custom Episodes Mod 示例",
+  "description": "演示外部剧情文本、自动换行、立绘、音效、画面效果与全屏文本框。",
+  "episode_name": "自定义剧情",
+
+  "bg": "bg_tg_precinct_int",
+  "bgm": "bgs_story_road",
+
+  "characters": {
+    "saturday": {
+      "display_name": "Saturday",
+      "color": "c_aqua",
+      "portrait": "sat_neutral",
+      "x": 350,
+      "y": 140,
+      "expressions": {
+        "happy": "sat_happy",
+        "angry": "sat_angry",
+        "think": "sat_think",
+        "smile": "sat_smile"
+      }
+    },
+    "demo": {
+      "display_name": "Demo",
+      "color": "c_orange",
+      "portrait": "images/demo_portrait.png",
+      "x": 160,
+      "y": 178,
+      "scale": 0.25
+    }
+  },
+
+  "lines": [
+    { "kind": "tint", "value": 0 },
+    { "kind": "location", "value": "种子岛警局" },
+    { "kind": "time", "value": "10:04 AM" },
+    { "kind": "date", "value": "November 18th, 2022" },
+
+    { "kind": "narration", "text": "这是一段完全独立于原版剧情的示例文本。" },
+    { "kind": "narration", "text": "它用来验证：外部文件夹里的对白，能不能正常走进游戏原本的文本框。" },
+
+    { "kind": "portrait", "who": "saturday" },
+    { "who": "saturday", "text": "……读得到。" },
+    { "who": "saturday", "text": "`c{think}而且字的样子跟平时一样，说明它用的还是游戏自己的字体。" },
+
+    { "kind": "narration", "text": "下面是表情切换：change 只换表情，不会改动立绘的位置。" },
+    { "kind": "change", "who": "saturday", "expression": "happy" },
+    { "who": "saturday", "text": "expression 走角色表里的别名表。" },
+    { "kind": "change", "who": "saturday", "portrait": "sat_frown", "bounce": false },
+    { "who": "saturday", "text": "也可以直接写资产名；bounce: false 就是无声换图，不弹一下。" },
+    { "kind": "move", "who": "saturday", "x": 200, "time": 30 },
+    { "kind": "change", "who": "saturday", "expression": "think" },
+    { "who": "saturday", "text": "注意我换了表情但位置没变——change 不重新定位。" },
+    { "kind": "bounce", "who": "saturday" },
+    { "who": "saturday", "text": "bounce 是只跳一下、不换图的动作。" },
+    { "kind": "portrait", "who": "saturday" },
+    { "kind": "narration", "text": "上面又调用了 portrait，这次会按角色表里的坐标（x=350）重新定位回来。" },
+
+    { "kind": "narration", "text": "下面这一行故意写得慢一点。" },
+    { "kind": "line", "speed": 0.4, "text": "打字机速度可以用 speed 调：1 是原版速度，数字越小越慢。" },
+
+    { "kind": "narration", "text": "这一段故意不写任何空格、也不写换行符，完全交给模组按对话框宽度自动断行。原版引擎只在空格处折行，所以官方中文版里到处是手塞的空格；这个模组会自己按 308 像素宽度算好断点，再以换行符的形式交给原版文本框，所以中文不用再加空格了。" },
+    { "kind": "narration", "text": "也可以自己指定断行位置：\n第一行到这里结束，\n第二行从这里继续。" },
+    { "kind": "narration", "wrap": false, "text": "这一行关掉了自动换行（wrap: false），文字完全按原样显示，是否折行交给原版引擎决定。" },
+    { "kind": "narration", "width": 160, "text": "这一行把宽度缩到 160 像素，断行会更早，适合做短句或诗歌排版。" },
+
+    { "kind": "clear" },
+    { "kind": "narration", "text": "上面执行了一条 clear：文本框被清空，但剧情不会中断。" },
+
+    { "kind": "se", "value": "sfx_songsel_beginsong", "gain": 0.6 },
+    { "kind": "flash", "alpha": 0.6, "color": 16777215, "time": 30 },
+    { "kind": "narration", "text": "刚才播了一个音效，并闪了一下白（flash）。" },
+
+    { "kind": "bg", "value": "bg_tg_precinct_ext2" },
+    { "kind": "narration", "text": "这一句之前换了一张背景。背景名直接写游戏里的精灵资产名。" },
+
+    { "who": "saturday", "text": "`c{sat}文本自带调色标记也还能用，比如这句是直接写在正文里的彩色。" },
+    { "who": "saturday", "text": "`e{jitter}抖动之类的效果同样有效。`e{normal}" },
+
+    { "kind": "narration", "text": "接下来演示立绘操作。原版剧本里立绘会移动、翻转、淡入淡出。" },
+    { "kind": "portrait", "who": "saturday", "x": 520, "y": 150, "scale": 0.14, "facing": true },
+    { "kind": "delay", "ms": 500 },
+    { "kind": "move", "who": "saturday", "x": 300, "y": 140, "time": 40 },
+    { "kind": "narration", "text": "move：用 40 帧移动到 (300,140)。" },
+    { "kind": "flip", "who": "saturday" },
+    { "who": "saturday", "text": "flip：翻了个身。" },
+    { "kind": "portrait_fade", "who": "saturday", "from": 1, "to": 0.15, "time": 30 },
+    { "kind": "narration", "text": "portrait_fade：透明度淡到 0.15。" },
+    { "kind": "portrait_fade", "who": "saturday", "from": 0.15, "to": 1, "time": 30 },
+    { "kind": "hide", "who": "saturday" },
+    { "kind": "narration", "text": "hide：立绘被隐藏。按确认继续。" },
+    { "kind": "show", "who": "saturday" },
+
+    { "kind": "fade", "color": 0, "to": 1, "time": 20, "wait": true },
+    { "kind": "bg", "value": "bg_tg_precinct_int" },
+    { "kind": "fade", "to": 0, "time": 20, "wait": true },
+    { "kind": "narration", "text": "上面是一段黑屏转场：淡出到黑、换背景、再淡入。fade 的 from 默认接当前透明度，所以一淡出一淡入能连上。" },
+
+    { "kind": "se", "value": "shatterfx" },
+    { "kind": "bgm_gain", "to": 0.25, "time": 800 },
+    { "kind": "narration", "text": "bgm_gain：BGM 音量淡到 25%。" },
+    { "kind": "bgm_gain", "to": 1, "time": 800 },
+
+    { "kind": "fullscreen" },
+    { "kind": "narration", "text": "这一段用的是全屏文本框。原版用它来放信件、日记、大段独白这类整屏文字，文字会自动逐段推进，每段按确认键继续。" },
+    { "kind": "narration", "text": "全屏模式下可以连续放好几段。" },
+    { "kind": "fullscreen_end" },
+    { "kind": "narration", "text": "回到普通文本框了。" },
+
+    { "kind": "narration", "text": "下面演示高清 CG：把房间分辨率调到 6 倍，让大图保持清晰。" },
+    { "kind": "cg", "value": "sp_cg_ep50", "res": 6, "hidegui": true },
+    { "kind": "narration", "text": "这一段就是 6 倍分辨率下的高清画面，左上角的地点/时间也被藏起来了。" },
+    { "kind": "hidegui", "value": false },
+    { "kind": "resolution", "value": 1 },
+    { "kind": "highres", "value": false },
+    { "kind": "bg", "value": "bg_tg_precinct_int" },
+    { "kind": "narration", "text": "已经复原成原版分辨率，继续用普通背景。" },
+
+    { "kind": "narration", "text": "下面演示自定义图片：这两张图放在剧集文件夹的 images/ 里，不是游戏自带素材，由模组在运行时读成精灵。" },
+    { "kind": "cg", "value": "images/demo_cg.png", "res": 2, "hidegui": true },
+    { "kind": "narration", "text": "上面这张是 640x360 的自定义图片，用 cg 指令以 2 倍分辨率铺满整屏。" },
+    { "kind": "hidegui", "value": false },
+    { "kind": "resolution", "value": 1 },
+    { "kind": "bg", "value": "bg_tg_precinct_int" },
+    { "kind": "portrait", "who": "demo" },
+    { "who": "demo", "text": "我是用外部 PNG 立绘显示的角色：图 360x720、scale 0.25，按底部中心对齐到 x/y。" },
+    { "kind": "move", "who": "demo", "x": 250, "time": 30 },
+    { "kind": "portrait_fade", "who": "demo", "from": 1, "to": 0, "time": 30 },
+    { "kind": "hide", "who": "demo" },
+    { "kind": "narration", "text": "自定义立绘同样支持 move / flip / portrait_fade / hide。示例到此结束，接下来执行 end，回到主界面。" },
+
+    { "kind": "bgm_stop", "fade": 600 },
+    { "kind": "end" }
+  ]
+}
