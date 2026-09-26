@@ -883,6 +883,8 @@ function mod_cs_end()
     // Tell the resident object to reset the picker once we are back on the menu
     // (the list has to be rescanned).
     mod_cs_restore_globals();
+    // A cutscene of this story must not survive it.
+    mod_cs_movie_stop();
 
     if (instance_exists(obj_storyportrait))
     {
@@ -904,6 +906,302 @@ function mod_cs_end()
 }
 
 // ---------------------------------------------------------------------------
+// Video cutscenes (step kind "video")
+//
+// The game ships a generic video player, so a cutscene is mostly path work plus
+// waiting: o_movie_player opens the file (video_open), draws the current frame in
+// its Draw event (video_draw) and closes it when the async "video_end" arrives
+// (finished = true). Vanilla cutscenes use the very same object, see
+// ss_c1_e3_2.gml:580. Our step waits for checkFinished().
+//
+// Playback goes through the OS Media Foundation decoder: mp4 with h.264 video and
+// AAC audio is what the game itself ships.
+// ---------------------------------------------------------------------------
+
+/// Game directory relative path of a video file of the current story.
+///
+/// Same rule as external audio: relative to story.json (the episode folder, or
+/// the chart folder for an in-chart story). A leading "/" means "from the game
+/// directory", so an episode can also reuse the game's own movies, e.g.
+/// "/MOVIE/C1B_PY_LOOP.mp4".
+function mod_cs_video_file(_name)
+{
+    var _n = mod_cs_str(_name);
+    if (_n == "") return "";
+    if (string_copy(_n, 1, 1) == "/") return string_delete(_n, 1, 1);
+    if (variable_global_exists("mod_cs_chart_active") && global.mod_cs_chart_active
+        && variable_global_exists("mod_cs_chart_folder") && global.mod_cs_chart_folder != "")
+    {
+        return global.mod_cs_chart_folder + _n;
+    }
+    return global.mod_cs_dir + global.mod_cs_folder + "/" + _n;
+}
+
+/// The path o_movie_player expects: it prepends working_directory itself.
+function mod_cs_video_movie_path(_name)
+{
+    var _rel = mod_cs_video_file(_name);
+    if (_rel == "") return "";
+    return "/" + _rel;
+}
+
+/// Initial vid_scale of a cutscene: the "scale" field of the step, or 0.5 - the
+/// size of the cutscenes the game itself ships (640x360). The real size is only
+/// known once the video decodes, so mod_cs_movie_measure() corrects this from the
+/// decoded surface on the first drawn frame (see the Draw GUI event).
+function mod_cs_video_scale(_e)
+{
+    if (variable_struct_exists(_e, "scale"))
+    {
+        var _s = real(_e.scale);
+        if (_s > 0) return _s;
+    }
+    return 0.5;
+}
+
+/// Volume of a cutscene: the game's music volume by default (what the vanilla
+/// movie players use), or an explicit 0..1 written in the step.
+function mod_cs_video_volume(_e)
+{
+    var _v = 1;
+    if (variable_global_exists("op_music_volume")) _v = global.op_music_volume;
+    if (variable_struct_exists(_e, "volume")) _v = real(_e.volume);
+    return max(0, min(1, _v));
+}
+
+/// Resting y of the dialogue box: 122 in a story room, 132 inside a chart
+/// (the values the vanilla in-chart stories and create_textbox() use).
+function mod_cs_movie_box_y()
+{
+    if (variable_global_exists("mod_cs_chart_active") && global.mod_cs_chart_active) return 132;
+    return 122;
+}
+
+/// Slides the dialogue box off the screen while a cutscene plays - the box is
+/// drawn in the GUI layer, i.e. above the video - and back afterwards.
+///
+/// No locals are used inside the "with" blocks on purpose: a with() makes every
+/// bare identifier resolve on the box instance (see README, pitfall 9b).
+function mod_cs_movie_box_away(_away)
+{
+    if (!instance_exists(o_textbox)) return;
+    if (_away)
+    {
+        with (o_textbox) TweenEasyMove(0, y, 0, 180, 0, mod_cs_chart_frames(0.6), EaseOutExpo);
+    }
+    else if (mod_cs_movie_box_y() == 132)
+    {
+        with (o_textbox) TweenEasyMove(0, y, 0, 132, 0, mod_cs_chart_frames(0.6), EaseOutExpo);
+    }
+    else
+    {
+        with (o_textbox) TweenEasyMove(0, y, 0, 122, 0, mod_cs_chart_frames(0.6), EaseOutExpo);
+    }
+}
+
+/// Starts the cutscene of a "video" step. Returns the instance, or noone when the
+/// file is missing (the caller then reports it).
+function mod_cs_video_play(_e)
+{
+    if (!variable_struct_exists(_e, "value")) return noone;
+    var _file = mod_cs_video_file(_e.value);
+    if (_file == "" || !file_exists(_file)) return noone;
+
+    // Nothing should show through the cutscene: leftover dialogue is dropped and
+    // the box itself slides off the screen (it is drawn above the video).
+    text_clear();
+    mod_cs_movie_box_away(true);
+    // The scale is measured from the decoded surface on the first drawn frame.
+    global.mod_cs_movie_measured = false;
+    global.mod_cs_movie_started = false;
+    global.mod_cs_movie_file = _file;
+    var _scale = mod_cs_video_scale(_e);
+    mod_cs_video_log("play " + _file + " scale " + string(_scale));
+    return instance_create_depth(0, 0, -999, o_movie_player, {
+        movie_path: mod_cs_video_movie_path(_e.value),
+        volume: mod_cs_video_volume(_e),
+        vid_scale: _scale
+    });
+}
+
+/// True when the player pressed the key that confirms dialogue; used to skip a
+/// cutscene (the vanilla ones can be skipped as well).
+function mod_cs_skip_pressed()
+{
+    var _pressed = false;
+    try
+    {
+        _pressed = input_check_pressed(4);
+    }
+    catch (_ex)
+    {
+        _pressed = false;
+    }
+    if (_pressed) return true;
+    if (variable_global_exists("menu_confirm") && !is_undefined(global.menu_confirm))
+    {
+        return keyboard_check_pressed(global.menu_confirm);
+    }
+    return false;
+}
+
+/// True while a cutscene may be skipped. The first 150 ms are ignored on purpose:
+/// the key press that advanced the previous line is still down, and without this
+/// a cutscene could be skipped by the very same press that started it.
+function mod_cs_movie_skip_allowed()
+{
+    if (!variable_global_exists("mod_cs_movie_start")) return true;
+    return ((current_time - global.mod_cs_movie_start) > 150);
+}
+
+/// Corrects the vid_scale of a running cutscene from the surface video_draw()
+/// hands back: the mp4 header may be unreadable for some files, the decoded frame
+/// never lies. Called once per cutscene from the Draw GUI event; until then the
+/// scale is the mp4 header guess (or 0.5 if even that failed).
+///
+/// video_draw() only returns the current frame surface - o_movie_player itself
+/// draws it in its own Draw event - so this call draws nothing by itself.
+function mod_cs_movie_measure()
+{
+    if (!variable_global_exists("mod_cs_movie_measured")) return;
+    if (global.mod_cs_movie_measured) return;
+
+    var _movie = noone;
+    if (global.mod_cs_movie != noone && instance_exists(global.mod_cs_movie)) _movie = global.mod_cs_movie;
+    else if (global.mod_cs_chart_movie != noone && instance_exists(global.mod_cs_chart_movie)) _movie = global.mod_cs_chart_movie;
+    if (_movie == noone) return;
+
+    var _frame = video_draw();
+    if (!is_array(_frame) || array_length(_frame) < 2) return;
+    if (_frame[0] != 0) return;                     // frame not decoded yet
+    var _w = 0;
+    var _h = 0;
+    try
+    {
+        _w = surface_get_width(_frame[1]);
+        _h = surface_get_height(_frame[1]);
+    }
+    catch (_ex)
+    {
+        return;
+    }
+    if (_w <= 0 || _h <= 0) return;
+
+    _movie.vid_scale = min(320 / _w, 180 / _h);
+    global.mod_cs_movie_measured = true;
+    mod_cs_log("movie: surface " + string(_w) + "x" + string(_h)
+        + " -> vid_scale " + string(_movie.vid_scale));
+}
+
+/// True when the running cutscene neither shows anything nor finishes.
+///
+/// video_open() fails silently for codecs Media Foundation cannot decode (it needs
+/// H.264 video + AAC audio; Opus audio in an mp4 - what OBS writes by default - makes
+/// the whole file unplayable). Then video_get_status() stays 0 and "finished" never
+/// becomes true, so without this the story would wait forever.
+function mod_cs_movie_dead()
+{
+    if (variable_global_exists("mod_cs_movie_started") && global.mod_cs_movie_started) return false;
+    if (!variable_global_exists("mod_cs_movie_start")) return false;
+    if ((current_time - global.mod_cs_movie_start) <= 2500) return false;
+
+    var _status = -1;
+    try
+    {
+        _status = video_get_status();
+    }
+    catch (_ex)
+    {
+        _status = -1;
+    }
+    if (_status != 0)
+    {
+        global.mod_cs_movie_started = true;          // it is playing (or paused)
+        return false;
+    }
+    return true;
+}
+
+/// Await of a story room cutscene (global.mod_cs_await_mode == 6).
+function mod_cs_movie_done()
+{
+    if (!variable_global_exists("mod_cs_movie")) return true;
+    if (is_undefined(global.mod_cs_movie) || global.mod_cs_movie == noone) return true;
+    if (!instance_exists(global.mod_cs_movie))
+    {
+        global.mod_cs_movie = noone;
+        mod_cs_movie_box_away(false);
+        return true;
+    }
+    if (global.mod_cs_movie_skippable && mod_cs_movie_skip_allowed() && mod_cs_skip_pressed())
+    {
+        mod_cs_video_log("skipped by the player");
+        instance_destroy(global.mod_cs_movie);
+        global.mod_cs_movie = noone;
+        mod_cs_movie_box_away(false);
+        return true;
+    }
+    if (global.mod_cs_movie.checkFinished())
+    {
+        mod_cs_video_log("finished " + string(global.mod_cs_movie_file));
+        instance_destroy(global.mod_cs_movie);
+        global.mod_cs_movie = noone;
+        mod_cs_movie_box_away(false);
+        return true;
+    }
+    if (mod_cs_movie_dead())
+    {
+        // Report it in the textbox and carry on - a silent hang is worse. The
+        // await that follows this one is a normal "confirm" wait.
+        mod_cs_video_log("no picture after 2.5s (codec?), giving up: " + string(global.mod_cs_movie_file));
+        instance_destroy(global.mod_cs_movie);
+        global.mod_cs_movie = noone;
+        mod_cs_movie_box_away(false);
+        text_clear();
+        name_set("");
+        text("`c{red}[video failed to play] `c{white}" + string(global.mod_cs_movie_file)
+            + chr(10) + "`c{think}(an mp4 with H.264 video + AAC audio is required)");
+        global.mod_cs_await_mode = 0;
+        return true;
+    }
+    return false;
+}
+
+/// Stops a running story room cutscene (story exit, room change, pause exit).
+function mod_cs_movie_stop()
+{
+    if (!variable_global_exists("mod_cs_movie")) return;
+    if (is_undefined(global.mod_cs_movie) || global.mod_cs_movie == noone) return;
+    if (instance_exists(global.mod_cs_movie)) instance_destroy(global.mod_cs_movie);
+    global.mod_cs_movie = noone;
+    mod_cs_movie_box_away(false);
+}
+
+/// Stops a running in-chart cutscene.
+function mod_cs_chart_movie_clear()
+{
+    if (!variable_global_exists("mod_cs_chart_movie")) return;
+    // Give the HUD its alpha back if the cutscene hid it (the score/combo layer is
+    // drawn in the GUI layer, i.e. above the video).
+    if (variable_global_exists("mod_cs_chart_movie_uialpha") && global.mod_cs_chart_movie_uialpha >= 0)
+    {
+        if (instance_exists(cc) && variable_instance_exists(cc, "mod_uialpha"))
+        {
+            cc.mod_uialpha = global.mod_cs_chart_movie_uialpha;
+        }
+        global.mod_cs_chart_movie_uialpha = -1;
+    }
+    if (is_undefined(global.mod_cs_chart_movie) || global.mod_cs_chart_movie == noone)
+    {
+        mod_cs_movie_box_away(false);
+        return;
+    }
+    if (instance_exists(global.mod_cs_chart_movie)) instance_destroy(global.mod_cs_chart_movie);
+    global.mod_cs_chart_movie = noone;
+    mod_cs_movie_box_away(false);
+}
+
+// ---------------------------------------------------------------------------
 // In-chart stories: gimmick "custom_episode"
 //
 // The vanilla chart gimmicks (obj_memories_gimmick / obj_supernova_gimmick) put
@@ -922,10 +1220,11 @@ function mod_cs_end()
 // freezes with the song instead of running on the wall clock.
 // ---------------------------------------------------------------------------
 
-/// Log line for in-chart stories. Unlike mod_cs_log() this one is unconditional:
-/// the author cannot switch on "debuglog" for a chart, and a skipped step has to
-/// be visible somewhere.
-function mod_cs_chart_log(_msg)
+/// Appends one line to "Custom Episodes/_modlog.txt" no matter what.
+///
+/// Used by the two features an author cannot debug with "debuglog": in-chart
+/// stories and video cutscenes (a video that does not play is invisible otherwise).
+function mod_cs_always_log(_tag, _msg)
 {
     var _f = -1;
     try
@@ -937,9 +1236,21 @@ function mod_cs_chart_log(_msg)
         return;
     }
     if (_f == -1) return;
-    file_text_write_string(_f, string(current_time) + "  [chart] " + string(_msg));
+    file_text_write_string(_f, string(current_time) + "  [" + string(_tag) + "] " + string(_msg));
     file_text_writeln(_f);
     file_text_close(_f);
+}
+
+/// Log line for in-chart stories (see mod_cs_always_log).
+function mod_cs_chart_log(_msg)
+{
+    mod_cs_always_log("chart", _msg);
+}
+
+/// Log line for video cutscenes (see mod_cs_always_log).
+function mod_cs_video_log(_msg)
+{
+    mod_cs_always_log("video", _msg);
 }
 
 /// Frame count for a duration in seconds.
@@ -1034,7 +1345,7 @@ function mod_cs_chart_load(_file)
     global.mod_cs_chart_title = "";
     global.mod_cs_chart_wrap = true;
     global.mod_cs_chart_width = 308;
-    global.mod_cs_chart_dwell = 2000;
+    global.mod_cs_chart_dwell = 0;
     global.mod_cs_chart_folder = "";
     if (!file_exists(_file)) return false;
 
@@ -1064,8 +1375,10 @@ function mod_cs_chart_load(_file)
     if (variable_struct_exists(_data, "title")) global.mod_cs_chart_title = string(_data.title);
     if (variable_struct_exists(_data, "wrap")) global.mod_cs_chart_wrap = (_data.wrap != false);
     if (variable_struct_exists(_data, "width")) global.mod_cs_chart_width = real(_data.width);
-    // Default dwell of one dialogue line in milliseconds, used when a line has no
-    // "dwell" of its own (in-chart only; the story room waits for a key press).
+    // Default dwell of one dialogue line in milliseconds. 0 = not set: in-chart
+    // lines then wait for the next "custom_episode_next" trigger (beat driven, the
+    // default). Writing "chart_dwell" (or a per line "dwell") turns lines back into
+    // plain timers.
     if (variable_struct_exists(_data, "chart_dwell")) global.mod_cs_chart_dwell = real(_data.chart_dwell);
     // Relative audio paths resolve against the folder of story.json.
     global.mod_cs_chart_folder = string_copy(_file, 1, max(0, string_length(_file) - string_length("story.json")));
@@ -1103,9 +1416,13 @@ function mod_cs_chart_start(_file)
     global.mod_cs_chart_active = true;
     global.mod_cs_chart_file = _file;
     global.mod_cs_chart_index = 0;
-    global.mod_cs_chart_typing = true;      // the box first has to slide in
-    global.mod_cs_chart_step_dwell = 1000;
-    global.mod_cs_chart_deadline = mod_cs_chart_clock() + 1000;
+    // Beat driven: the first line belongs to the beat of "custom_episode" itself,
+    // so nothing waits for the box to slide in - the text shows while it does.
+    global.mod_cs_chart_typing = false;
+    global.mod_cs_chart_step_dwell = 0;
+    global.mod_cs_chart_deadline = 0;
+    global.mod_cs_chart_wait_trigger = false;
+    global.mod_cs_chart_step_sync = false;
     global.mod_cs_chart_exit = 0;
     global.mod_cs_chart_room = room;
     global.mod_cs_chart_box = noone;
@@ -1140,6 +1457,8 @@ function mod_cs_chart_stop(_why)
     global.mod_cs_chart_req = undefined;
     global.mod_cs_chart_active = false;
     global.mod_cs_chart_typing = false;
+    global.mod_cs_chart_wait_trigger = false;
+    global.mod_cs_chart_step_sync = false;
     global.mod_cs_chart_exit = 0;
     if (textbox_exists()) text_clear();
     if (global.mod_cs_chart_created_box && instance_exists(global.mod_cs_chart_box))
@@ -1149,12 +1468,15 @@ function mod_cs_chart_stop(_why)
     global.mod_cs_chart_created_box = false;
     global.mod_cs_chart_box = noone;
     global.mod_cs_chart_cc = noone;
+    // A cutscene must never outlive the story that started it.
+    mod_cs_chart_movie_clear();
     // Streams opened for this story (OGG files relative to the chart folder).
     mod_cs_free_audio();
 }
 
 /// Runs one step of an in-chart story. Returns the wait in milliseconds before
-/// the next step, or -1 when the next step waits for the typewriter first.
+/// the next step, -1 when the next step waits for the typewriter first, or -2
+/// when it waits for a cutscene (see the movie block in mod_cs_chart_tick).
 function mod_cs_chart_step(_e)
 {
     if (!is_struct(_e)) return 0;
@@ -1198,12 +1520,25 @@ function mod_cs_chart_step(_e)
             if (_do_wrap) _body = mod_cs_wrap_text(_body, _w);
             text(_body, _speed);
 
-            // Dwell of this line: an explicit "dwell" wins, otherwise the story
-            // default plus an estimate of the typewriter time.
-            var _dwell = global.mod_cs_chart_dwell;
-            if (variable_struct_exists(_e, "dwell")) _dwell = real(_e.dwell);
-            else _dwell += (string_length(_body) * 40) / max(0.1, _speed);
+            // Beat driven by default: the line stays on screen until the next
+            // "custom_episode_next" fires (that is what a .vsm can express). An
+            // explicit "dwell" on the line - or a top level "chart_dwell" - turns
+            // that line back into a plain timer.
+            var _sync = true;
+            var _dwell = 0;
+            if (variable_struct_exists(_e, "dwell"))
+            {
+                _sync = false;
+                _dwell = real(_e.dwell);
+            }
+            else if (global.mod_cs_chart_dwell > 0)
+            {
+                _sync = false;
+                _dwell = global.mod_cs_chart_dwell;
+            }
+            if (!_sync) _dwell += (string_length(_body) * 40) / max(0.1, _speed);
             global.mod_cs_chart_step_dwell = max(200, _dwell);
+            global.mod_cs_chart_step_sync = _sync;
             return -1;
 
         case "narrator":
@@ -1215,11 +1550,11 @@ function mod_cs_chart_step(_e)
             return 0;
 
         case "wait":
-            // In the story room this waits for a key press; inside a chart it
-            // becomes a plain pause, otherwise the song would simply run on.
-            var _wms = global.mod_cs_chart_dwell;
-            if (variable_struct_exists(_e, "ms")) _wms = real(_e.ms);
-            return max(0, _wms);
+            // In the story room this waits for a key press. Inside a chart it waits
+            // for the next trigger (the beat driven default); writing "ms" makes it
+            // a plain timer instead.
+            if (variable_struct_exists(_e, "ms")) return max(0, real(_e.ms));
+            return -3;              // -3 = wait for a "custom_episode_next"
 
         case "delay":
             var _dms = 0;
@@ -1260,6 +1595,30 @@ function mod_cs_chart_step(_e)
             }
             return 0;
 
+        case "video":
+            // A cutscene inside a chart covers the play area; the song keeps
+            // running. Skipping defaults to off here (during play the note keys
+            // would cut it); "skippable": true turns it on for the confirm key.
+            var _cutname = "";
+            if (variable_struct_exists(_e, "value")) _cutname = string(_e.value);
+            global.mod_cs_chart_movie = mod_cs_video_play(_e);
+            global.mod_cs_movie_start = current_time;
+            global.mod_cs_chart_movie_skip = false;
+            if (variable_struct_exists(_e, "skippable")) global.mod_cs_chart_movie_skip = (_e.skippable == true);
+            // Optional "hidegui": the score/combo HUD is drawn in the GUI layer, so
+            // it sits above the video. Its alpha is saved and restored by
+            // mod_cs_chart_movie_clear().
+            global.mod_cs_chart_movie_uialpha = -1;
+            if (variable_struct_exists(_e, "hidegui") && _e.hidegui == true
+                && instance_exists(cc) && variable_instance_exists(cc, "mod_uialpha"))
+            {
+                global.mod_cs_chart_movie_uialpha = cc.mod_uialpha;
+                cc.mod_uialpha = 0;
+            }
+            if (global.mod_cs_chart_movie != noone) return -2;
+            mod_cs_video_log("not found: " + _cutname);
+            return 0;
+
         case "end":
         case "goto":
         case "abort":
@@ -1273,6 +1632,41 @@ function mod_cs_chart_step(_e)
     return 0;
 }
 
+/// "custom_episode_next" fired: advance the story by one step.
+///
+/// Only a story that is actually waiting for a trigger moves. Everything else is
+/// dropped on purpose (and logged), so a stray trigger can never make the story
+/// run away: not running, a cutscene is playing, or an explicit "delay" is still
+/// counting down.
+function mod_cs_chart_next()
+{
+    if (!global.mod_cs_chart_active)
+    {
+        mod_cs_chart_log("next ignored: no story is running");
+        return;
+    }
+    if (global.mod_cs_chart_movie != noone)
+    {
+        mod_cs_chart_log("next ignored: a cutscene is playing");
+        return;
+    }
+    var _waiting = global.mod_cs_chart_wait_trigger
+        || (global.mod_cs_chart_typing && global.mod_cs_chart_step_sync);
+    if (!_waiting)
+    {
+        mod_cs_chart_log("next ignored: not waiting for a trigger (delay / box slide in)");
+        return;
+    }
+
+    // Beat first: cut the typewriter short and run the next step right now. The
+    // tick picks this up in the same frame (deadline 0 = already due).
+    global.mod_cs_chart_wait_trigger = false;
+    global.mod_cs_chart_typing = false;
+    global.mod_cs_chart_step_sync = false;
+    global.mod_cs_chart_deadline = 0;
+    mod_cs_chart_log("next -> step " + string(global.mod_cs_chart_index + 1));
+}
+
 /// One frame of in-chart playback; called first thing in the Step event.
 function mod_cs_chart_tick()
 {
@@ -1281,8 +1675,17 @@ function mod_cs_chart_tick()
     if (!variable_global_exists("mod_cs_chart_req")) global.mod_cs_chart_req = undefined;
     if (global.mod_cs_chart_req != undefined)
     {
+        var _req = global.mod_cs_chart_req;
         global.mod_cs_chart_req = undefined;
-        if (!global.mod_cs_active && room != scene_story && instance_exists(cc))
+        // mode 0 = "custom_episode" (start), mode 1 = "custom_episode_next"
+        // (advance one step). See the registration block at the end of this event.
+        var _reqmode = 0;
+        if (is_struct(_req) && variable_struct_exists(_req, "mode")) _reqmode = _req.mode;
+        if (_reqmode == 1)
+        {
+            mod_cs_chart_next();
+        }
+        else if (!global.mod_cs_active && room != scene_story && instance_exists(cc))
         {
             // A trigger that arrives while a story is still on screen replaces it:
             // a second gimmick line, or a quick restart re-firing the same one.
@@ -1313,6 +1716,38 @@ function mod_cs_chart_tick()
         return;
     }
 
+    // A cutscene is on screen: hold the step machine until it is over. The song
+    // keeps running, so the deadline check below is skipped on purpose.
+    if (global.mod_cs_chart_movie != noone)
+    {
+        if (!instance_exists(global.mod_cs_chart_movie))
+        {
+            global.mod_cs_chart_movie = noone;
+        }
+        else
+        {
+            var _cut = global.mod_cs_chart_movie;
+            var _skip = false;
+            if (global.mod_cs_chart_movie_skip && mod_cs_movie_skip_allowed()
+                && variable_global_exists("menu_confirm") && !is_undefined(global.menu_confirm))
+            {
+                _skip = keyboard_check_pressed(global.menu_confirm);
+            }
+            if (_skip || _cut.checkFinished() || mod_cs_movie_dead())
+            {
+                instance_destroy(_cut);
+                global.mod_cs_chart_movie = noone;
+                if (_skip) mod_cs_video_log("skipped by the player (in chart)");
+                else if (!global.mod_cs_movie_started) mod_cs_video_log("no picture after 2.5s (codec?), giving up: " + string(global.mod_cs_movie_file));
+                mod_cs_movie_box_away(false);
+            }
+            else
+            {
+                return;
+            }
+        }
+    }
+
     // Box sliding out: destroy it when the tween is done.
     if (global.mod_cs_chart_exit > 0)
     {
@@ -1328,10 +1763,16 @@ function mod_cs_chart_tick()
             global.mod_cs_chart_box = noone;
             global.mod_cs_chart_active = false;
             mod_cs_chart_log("finished");
+            mod_cs_chart_movie_clear();
             mod_cs_free_audio();
         }
         return;
     }
+
+    // Beat driven: the step machine stands still until "custom_episode_next"
+    // arrives (see mod_cs_chart_next). Nothing here is time based, so the deadline
+    // gate below is skipped while waiting.
+    if (global.mod_cs_chart_wait_trigger) return;
 
     if (mod_cs_chart_clock() < global.mod_cs_chart_deadline) return;
 
@@ -1349,6 +1790,12 @@ function mod_cs_chart_tick()
         }
         if (!_done) return;
         global.mod_cs_chart_typing = false;
+        if (global.mod_cs_chart_step_sync)
+        {
+            // Beat driven line: no timer, the next trigger moves on.
+            global.mod_cs_chart_wait_trigger = true;
+            return;
+        }
         global.mod_cs_chart_deadline = mod_cs_chart_clock() + global.mod_cs_chart_step_dwell;
         return;
     }
@@ -1359,9 +1806,22 @@ function mod_cs_chart_tick()
         var _e = _lines[global.mod_cs_chart_index];
         global.mod_cs_chart_index++;
         var _wait = mod_cs_chart_step(_e);
+        if (_wait == -3)
+        {
+            // "wait" without "ms": stand still until the next trigger.
+            global.mod_cs_chart_wait_trigger = true;
+            return;
+        }
+        if (_wait == -2)
+        {
+            // A cutscene is running: the movie block above drives on when it ends.
+            global.mod_cs_chart_typing = false;
+            return;
+        }
         if (_wait < 0)
         {
-            // A line is on screen: wait for the typewriter, then for its dwell.
+            // A line is on screen: wait for the typewriter, then for its dwell (or
+            // for the next trigger, see the typing branch above).
             global.mod_cs_chart_typing = true;
             return;
         }
@@ -1665,6 +2125,7 @@ global.mod_cs_run_pending = function()
         //   2 = plain timer (global.mod_cs_await_ms, started by the step)
         //   4 = switch to the full screen textbox and wait until it is ready
         //   5 = dismiss the full screen textbox and wait until it is gone
+        //   6 = wait for the cutscene of a "video" step to finish / be skipped
         __CoroutineAwait(method(o_mod_storyentry, function()
         {
             var _mode = global.mod_cs_await_mode;
@@ -1672,6 +2133,7 @@ global.mod_cs_run_pending = function()
             if (_mode == 2) return ((current_time - global.mod_cs_wait_start) >= global.mod_cs_await_ms);
             if (_mode == 4) return switch_to_fullscreen();
             if (_mode == 5) return end_fullscreen();
+            if (_mode == 6) return mod_cs_movie_done();
 
             // Nothing on screen at all (story start, or right after clear()).
             // o_fullscreen_textbox needs its own check: in full screen mode
@@ -1924,6 +2386,38 @@ global.mod_cs_make_step = function()
                         {
                             o_cutsceneConductor.hideGui = true;
                         }
+                    }
+                }
+                break;
+
+            case "video":
+                // Full screen cutscene (mp4). The story waits for it: the await
+                // that follows this step runs mod_cs_movie_done() (mode 6).
+                if (variable_struct_exists(_e, "value"))
+                {
+                    global.mod_cs_movie_skippable = true;
+                    if (variable_struct_exists(_e, "skippable")) global.mod_cs_movie_skippable = (_e.skippable != false);
+                    var _cut = mod_cs_video_play(_e);
+                    if (_cut != noone)
+                    {
+                        global.mod_cs_movie = _cut;
+                        global.mod_cs_movie_start = current_time;
+                        global.mod_cs_await_mode = 6;
+                        // Same meaning as in the "cg" step: hide the location / time /
+                        // date HUD (the author turns it back on with another step).
+                        if (variable_struct_exists(_e, "hidegui") && _e.hidegui == true
+                            && instance_exists(o_cutsceneConductor))
+                        {
+                            o_cutsceneConductor.hideGui = true;
+                        }
+                    }
+                    else
+                    {
+                        // Say so in the textbox instead of failing silently; the
+                        // await that follows is then a normal "confirm" one.
+                        mod_cs_video_log("not found: " + mod_cs_str(_e.value));
+                        name_set("");
+                        text("`c{red}[video not found] `c{white}" + mod_cs_str(_e.value));
                     }
                 }
                 break;
@@ -2296,13 +2790,26 @@ if (!variable_global_exists("mod_cs_chart_file")) global.mod_cs_chart_file = "";
 if (!variable_global_exists("mod_cs_chart_title")) global.mod_cs_chart_title = "";
 if (!variable_global_exists("mod_cs_chart_index")) global.mod_cs_chart_index = 0;
 if (!variable_global_exists("mod_cs_chart_deadline")) global.mod_cs_chart_deadline = 0;
-if (!variable_global_exists("mod_cs_chart_step_dwell")) global.mod_cs_chart_step_dwell = 2000;
-if (!variable_global_exists("mod_cs_chart_dwell")) global.mod_cs_chart_dwell = 2000;
+if (!variable_global_exists("mod_cs_chart_step_dwell")) global.mod_cs_chart_step_dwell = 0;
+if (!variable_global_exists("mod_cs_chart_dwell")) global.mod_cs_chart_dwell = 0;
 if (!variable_global_exists("mod_cs_chart_typing")) global.mod_cs_chart_typing = false;
+if (!variable_global_exists("mod_cs_chart_wait_trigger")) global.mod_cs_chart_wait_trigger = false;
+if (!variable_global_exists("mod_cs_chart_step_sync")) global.mod_cs_chart_step_sync = false;
 if (!variable_global_exists("mod_cs_chart_exit")) global.mod_cs_chart_exit = 0;
 if (!variable_global_exists("mod_cs_chart_room")) global.mod_cs_chart_room = -1;
 if (!variable_global_exists("mod_cs_chart_box")) global.mod_cs_chart_box = noone;
 if (!variable_global_exists("mod_cs_chart_cc")) global.mod_cs_chart_cc = noone;
+// Video cutscenes (step kind "video"): the running cutscene instances, their skip
+// flags and the cache of sizes read out of the mp4 headers.
+if (!variable_global_exists("mod_cs_movie")) global.mod_cs_movie = noone;
+if (!variable_global_exists("mod_cs_movie_skippable")) global.mod_cs_movie_skippable = true;
+if (!variable_global_exists("mod_cs_chart_movie")) global.mod_cs_chart_movie = noone;
+if (!variable_global_exists("mod_cs_chart_movie_skip")) global.mod_cs_chart_movie_skip = false;
+if (!variable_global_exists("mod_cs_chart_movie_uialpha")) global.mod_cs_chart_movie_uialpha = -1;
+if (!variable_global_exists("mod_cs_movie_start")) global.mod_cs_movie_start = 0;
+if (!variable_global_exists("mod_cs_movie_measured")) global.mod_cs_movie_measured = false;
+if (!variable_global_exists("mod_cs_movie_started")) global.mod_cs_movie_started = false;
+if (!variable_global_exists("mod_cs_movie_file")) global.mod_cs_movie_file = "";
 if (!variable_global_exists("mod_cs_chart_created_box")) global.mod_cs_chart_created_box = false;
 if (!variable_global_exists("mod_cs_chart_wrap")) global.mod_cs_chart_wrap = true;
 if (!variable_global_exists("mod_cs_chart_width")) global.mod_cs_chart_width = 308;
@@ -2533,32 +3040,19 @@ menu_activate = function()
     mod_cs_begin(_item.folder);
 };
 
-// ---------------------------------------------------------------------------
-// In-chart story gimmick
-//
-// Registers "custom_episode" so a chart can call a story from inside the song:
-//
-//     120,0,linear,_,_,custom_episode,-1
-//
-// The vanilla API (addGlobalMod, mod_setup.gml) hands out indices below 128,
-// which is exactly what obj_base_gimmick.updateMods() understands - both the
-// stock version (mi < 128) and the name based replacement that ships with the
-// Custom Gimmicks mod. Only when the vanilla table is exhausted is the unlimited
-// registry of that mod used as a fallback.
-// ---------------------------------------------------------------------------
-if (variable_global_exists("mods") && is_struct(global.mods) && !struct_exists(global.mods, "custom_episode"))
+/// Registers one chart gimmick name on behalf of this mod.
+///
+/// The vanilla API (addGlobalMod, mod_setup.gml) hands out indices below 128, which
+/// is what obj_base_gimmick.updateMods() understands - both the stock version
+/// (mi < 128) and the name based replacement that ships with the Custom Gimmicks
+/// mod. Only when that table is exhausted the unlimited registry of that mod is
+/// used as a fallback.
+function mod_cs_register_chart_gimmick(_name, _callback)
 {
-    // This callback runs with the gimmick object's scope, so it may only touch
-    // globals: it just parks the request, the Step event does the rest.
-    var _chart_cb = function(_start, _duration, _v1, _v2)
-    {
-        global.mod_cs_chart_req = { ms: _start, v1: _v1, v2: _v2 };
-    };
-
     var _ok = false;
     try
     {
-        addGlobalMod("custom_episode", 0, _chart_cb, undefined);
+        addGlobalMod(_name, 0, _callback, undefined);
         _ok = true;
     }
     catch (_ex)
@@ -2568,8 +3062,8 @@ if (variable_global_exists("mods") && is_struct(global.mods) && !struct_exists(g
 
     if (!_ok)
     {
-        // Fallback: the unlimited registry of the Custom Gimmicks mod, which is
-        // only referenced after that mod announced itself in global.vml_mods.
+        // Fallback: the unlimited registry of the Custom Gimmicks mod, which is only
+        // referenced after that mod announced itself in global.vml_mods.
         var _cg = false;
         try
         {
@@ -2584,7 +3078,7 @@ if (variable_global_exists("mods") && is_struct(global.mods) && !struct_exists(g
         {
             try
             {
-                UnlimitedAddGlobalMod("custom_episode", 0, _chart_cb, undefined);
+                UnlimitedAddGlobalMod(_name, 0, _callback, undefined);
                 _ok = true;
             }
             catch (_ex3)
@@ -2594,5 +3088,40 @@ if (variable_global_exists("mods") && is_struct(global.mods) && !struct_exists(g
         }
     }
 
-    if (!_ok) mod_cs_chart_log("could not register the custom_episode gimmick");
+    if (!_ok) mod_cs_always_log("chart", "could not register the " + string(_name) + " gimmick");
+}
+
+// ---------------------------------------------------------------------------
+// In-chart story gimmicks
+//
+// Two names are registered, so a chart can drive a story by beat:
+//
+//     120,0,linear,_,_,custom_episode,-1          ; start, show step 1
+//     128,0,linear,_,_,custom_episode_next,-1     ; advance one step
+//
+// In-chart dialogue is beat driven: a line stays on screen until the next
+// "custom_episode_next" fires. A line with an explicit "dwell", or a story with a
+// top level "chart_dwell", is a plain timer instead. See mod_cs_chart_next().
+// ---------------------------------------------------------------------------
+if (variable_global_exists("mods") && is_struct(global.mods))
+{
+    // These callbacks run with the gimmick object scope, so they may only touch
+    // globals: each one just parks its request, the Step event does the rest.
+    if (!struct_exists(global.mods, "custom_episode"))
+    {
+        var _cb_start = function(_start, _duration, _v1, _v2)
+        {
+            global.mod_cs_chart_req = { mode: 0, ms: _start, v1: _v1, v2: _v2 };
+        };
+        mod_cs_register_chart_gimmick("custom_episode", _cb_start);
+    }
+
+    if (!struct_exists(global.mods, "custom_episode_next"))
+    {
+        var _cb_next = function(_start, _duration, _v1, _v2)
+        {
+            global.mod_cs_chart_req = { mode: 1, ms: _start, v1: _v1, v2: _v2 };
+        };
+        mod_cs_register_chart_gimmick("custom_episode_next", _cb_next);
+    }
 }

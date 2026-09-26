@@ -47,6 +47,8 @@ if (mode == 1 && _room_changed && _room_now != scene_story)
     // The stock pause menu leaves global.story_paused set when it exits a story.
     global.story_paused = false;
     mod_cs_restore_globals();
+    // A cutscene of this story must not survive the session either.
+    mod_cs_movie_stop();
     // Leaving through the pause menu skips mod_cs_end(), so the HD state has to be
     // undone here too: obj_resolution_handler is persistent and would otherwise
     // keep rendering the main menu at the multiplier the episode switched on.

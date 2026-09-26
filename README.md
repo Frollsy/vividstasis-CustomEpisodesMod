@@ -134,6 +134,7 @@ Custom Episodes/
 | `hide` / `show` | 隐藏 / 重新显示某个立绘，`who` |
 | `portrait_clear` | 移除本模组创建的全部立绘 |
 | `narrator` | 直接设置名字框文本，`value` = 字符串 |
+| `video` | 全屏 mp4 过场，`value` = 视频路径（相对剧集文件夹，或以 `/` 开头相对游戏目录），可选 `volume`（缺省 = 游戏音乐音量）、`scale`（缺省自动读 mp4 头部算"铺满不变形"）、`skippable`（缺省 true = 可按确认跳过）。实现在 `mod_cs_video_*` / `mod_cs_movie_done`：复用原版 `o_movie_player`，等 `checkFinished()` |
 | `location` | 设置左上角地点，`value` = 字符串 |
 | `time` | 设置左上角时间，`value` = 字符串 |
 | `date` | 设置左上角日期，`value` = 字符串 |
@@ -574,13 +575,18 @@ Draw GUI 事件**，而且主菜单 UI 都在 GUI 层、不按 depth 排序 —�
 
 ### 本模组怎么做
 
-- 注册：`o_mod_storyentry` 的 Create 末尾用**原版** `addGlobalMod("custom_episode", 0, cb, undefined)`
-  （`mod_setup.gml`，索引 0..127，已用 66 个）。回调只写全局变量 `global.mod_cs_chart_req`；
-  只有原版表用满时才回退到 Custom Gimmicks 的 `UnlimitedAddGlobalMod`。
-  这个入口已在公开仓库核对过（2026-08-20 的 `main`）：
-  <https://github.com/vivid-stasis-revival/Custom-Gimmicks-Mod> 的
-  `codes/gml_GlobalScript_init_customgmk.gml`（`lastIdx` 从 129 起）与
-  `codepatches/updateMod.gml`（自定义曲按名字解析），两者与本地 `vsml014` 里的副本逐字节相同
+- 注册：`o_mod_storyentry` 的 Create 末尾用**原版** `addGlobalMod` 注册两个名字
+  （`mod_cs_register_chart_gimmick()` 里带 Custom Gimmicks 的 `UnlimitedAddGlobalMod` 兜底）：
+  `custom_episode`（开始，`mode 0`）与 `custom_episode_next`（推进一步，`mode 1`）。
+  回调只写 `global.mod_cs_chart_req = {mode, ms, v1, v2}`，由 Step 事件分发
+- **推进方式是 beat 驱动**（2026-09-25 起，作者要求）：`line`/`narration` 显示后进入
+  `global.mod_cs_chart_wait_trigger`，直到 `custom_episode_next` 触发（`mod_cs_chart_next()`）
+  才继续。`mod_cs_chart_next()` 只在"真的在等触发"时生效：剧情没在跑 / 视频在播 / 正在 `delay`
+  都丢弃并写 `[chart] next ignored: …`；`typing` 期间允许推进（跟拍优先，用 `mod_cs_chart_step_sync`
+  区分这一行是等触发还是定时）
+  - 想退回定时：该行写 `dwell`，或顶层写 `chart_dwell`（`mod_cs_chart_load` 的缺省是 **0 = 不等定时**）
+  - `wait` 不带 `ms` = 等触发（step 返回 `-3`）；`delay` 永远定时
+  - `custom_episode` 那一拍**不再等 1 秒滑入**（`deadline = 0`），第 1 句立刻显示，否则跟不上拍
 - 解析：作者在 `.vsm` 里写 `beat,dur,ease,_,_,custom_episode,-1` 即可。Custom Songs Mod 的
   `load_text_mods()` 会把 `ms.ig` 设成 `struct_exists(global.mods, 名字)`，而 Custom Gimmicks Mod 的
   `codepatches/updateMod.gml` 把 `obj_base_gimmick.updateMods()` 换成了按名字解析（只对自定义曲生效），
@@ -628,5 +634,22 @@ Draw GUI 事件**，而且主菜单 UI 都在 GUI 层、不按 depth 排序 —�
 2. 名字框（`who` + `characters.display_name`）在谱面内的绘制分支（`o_textbox_Draw_64` 会读
    `global.story_progress` / `global.profile_titles_map`）—— 测试剧本里已经放了一句
 3. 多条 gimmick 触发互相覆盖、以及 `!story:` 覆盖路径
+4. **视频过场（`video`，2026-09-21 加，已实机验证）**：复用原版 `o_movie_player`
+   （`movie_path` / `volume` / `vid_scale` + `checkFinished()`）。缩放**只能靠解码后的画面**：
+   过场第一帧在 Draw GUI 事件里调用一次 `video_draw()`，用 `surface_get_width/height` 量出真实尺寸，
+   取 `min(320/w, 180/h)` 写回 `movie.vid_scale`（实测日志 `surface 320x180 -> vid_scale 1`、
+   `surface 1280x720 -> vid_scale 0.25`）。**曾试图解析 mp4 头部**（`moov → trak → tkhd`）预判尺寸，
+   并用 `buffer_load` 读文件 —— 实测在游戏里从来没读到（相对路径与 `working_directory + 相对路径`
+   都失败，日志里永远是初值 0.5），已删掉：留着只会白读整个视频（游戏自带最大 183 MB）。
+   播放期间 `mod_cs_movie_box_away()` 把 `o_textbox` 滑到 y=180（文本框画在视频之上），播完滑回
+   122 / 谱面内 132；`hidegui` 剧情房间走 `o_cutsceneConductor.hideGui`、谱面内临时 `cc.mod_uialpha = 0`
+   再恢复；跳过有 150ms 宽限。**实机确认**：320×180 与 1280×720 铺满不变形、有音轨的
+   `C1B_PY_OP.mp4` 有声（`C2B_US_MIDSONG.mp4` 本身无音轨）、文本框滑出滑回、播完自动继续、
+   `skippable:false` 跳不掉、`[video not found]` 正常显示。**实机踩到的第二类问题**：Opus 音轨
+   （OBS 默认输出的 `H.264 + Opus` mp4）会让 Media Foundation **整段打不开** —— 没画面也没声音，
+   而且 `video_open()` 不报错、状态停在 0、`finished` 永远不为真，旧代码在这里会**卡死**。
+   现在 2.5 秒无画面就判定失败：跳过它、在文本框提示 `[video failed to play]`、并写 `[video]` 日志
+   （`mod_cs_always_log()`，视频与谱面内剧情共用，作者不用开 `debuglog`）。
+   **未做**：非 16:9 居中（现在与原版一致，左上对齐）；测试剧集 `Custom Episodes/_zz_video_probe/` 仍在
 
 
